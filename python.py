@@ -11,40 +11,49 @@ Original file is located at
 # Gemini Functions
 # ============================================================
 
-# 建立 Gemini API Client 的函式
+# 建立 Gemini API Client
+# 這個函式的目的：
+# 1. 檢查 Gemini 套件是否存在
+# 2. 檢查 API KEY 是否存在
+# 3. 建立 Gemini Client
+# 4. 如果失敗則回傳 None
 def make_gemini_client():
 
-    # 如果 google-genai 套件沒有安裝
+    # 如果沒有安裝 google-genai 套件
     # GEMINI_INSTALLED 通常是一個布林值
-    # False 代表套件不存在
+    # True 代表已安裝
+    # False 代表未安裝
     if not GEMINI_INSTALLED:
 
-        # 顯示沒安裝好的提示訊息
+        # 顯示提示訊息
         print("google-genai is not installed. Using local fallback content.")
 
-        # 回傳 None，代表無法使用 Gemini
+        # 回傳 None
+        # 後續程式會改用本地 fallback 內容
         return None
 
-    # 從環境變數讀取 API KEY
-    # os.getenv() 可以安全取得環境變數
+    # 從系統環境變數中讀取 GEMINI_API_KEY
+    # 例如：
+    # export GEMINI_API_KEY=xxxx
     api_key = os.getenv("GEMINI_API_KEY")
 
-    # 如果沒有設定 API KEY
+    # 如果 API KEY 不存在
     if not api_key:
 
-        # 顯示沒安裝好的提示訊息
+        # 顯示錯誤訊息
         print("GEMINI_API_KEY is not set. Using local fallback content.")
 
-        # 回傳 None，之後程式會改用本地 fallback 內容
+        # 回傳 None
         return None
 
     # 嘗試建立 Gemini Client
     try:
 
-        # 成功讀取 API KEY
+        # 顯示成功訊息
         print("GEMINI_API_KEY loaded successfully.")
 
-        # 建立 Gemini Client 物件並回傳
+        # 建立 Gemini Client 物件
+        # 後續所有 Gemini API 呼叫都會透過這個 client
         return genai.Client(api_key=api_key)
 
     # 如果建立失敗
@@ -53,14 +62,26 @@ def make_gemini_client():
         # 顯示錯誤訊息
         print("Gemini client failed. Using local fallback content.")
 
-        # 印出詳細錯誤
+        # 印出詳細錯誤內容
         print("Error:", e)
 
         # 回傳 None
         return None
 
 
-# 使用 Gemini 生成內容，並支援 Retry 機制
+# 使用 Gemini 生成內容（包含 retry 機制）
+#
+# 參數說明：
+# client            -> Gemini Client
+# prompt            -> 要傳給 Gemini 的提示詞
+# response_json     -> 是否要求 Gemini 回傳 JSON
+# max_retries       -> 每個模型最多重試次數
+# temperature       -> 回應創意程度
+#
+# 功能：
+# 1. 嘗試多個 Gemini 模型
+# 2. API 忙碌時自動 retry
+# 3. 遇到失敗時自動切換模型
 def gemini_generate_with_retry(
     client,
     prompt,
@@ -74,38 +95,46 @@ def gemini_generate_with_retry(
     if client is None:
         return None
 
-    # 紀錄最後一次錯誤
+    # 用來記錄最後一次錯誤
     last_error = None
 
-    # 記錄已使用過的模型
+    # 記錄已使用模型
     # 避免重複使用
     used_models = []
 
     # 逐一嘗試 fallback 模型
+    # GEMINI_FALLBACK_MODELS 通常是模型名稱 list
+    # 例如：
+    # ["gemini-1.5-pro", "gemini-1.5-flash"]
     for model in GEMINI_FALLBACK_MODELS:
 
-        # 如果模型已經用過
+        # 如果模型已經使用過
         if model in used_models:
+
+            # 跳過
             continue
 
         # 加入已使用清單
         used_models.append(model)
 
         # Retry 機制
-        # 每個模型最多重試 max_retries 次
+        # 每個模型最多嘗試 max_retries 次
         for attempt in range(max_retries):
 
             try:
 
-                # Gemini 生成設定
+                # Gemini 設定參數
                 config_kwargs = {
+
+                    # temperature 越高
+                    # 回應越有創意
                     "temperature": temperature
                 }
 
                 # 如果希望 Gemini 回傳 JSON
                 if response_json:
 
-                    # 指定 MIME TYPE 為 JSON
+                    # 指定回傳格式為 JSON
                     config_kwargs["response_mime_type"] = "application/json"
 
                 # 呼叫 Gemini API
@@ -114,41 +143,43 @@ def gemini_generate_with_retry(
                     # 指定模型名稱
                     model=model,
 
-                    # 傳入 Prompt
+                    # 傳送 Prompt
                     contents=prompt,
 
-                    # 建立設定物件
+                    # 建立 Gemini 設定物件
                     config=types.GenerateContentConfig(**config_kwargs),
                 )
 
-                # 如果 Gemini 有回傳文字
+                # 如果 Gemini 有成功回傳文字
                 if response.text and response.text.strip():
 
-                    # 去除前後空白後回傳
+                    # 去除空白後回傳
                     return response.text.strip()
 
-                # 如果回傳空字串
+                # 如果 Gemini 回傳空字串
                 last_error = RuntimeError("Gemini returned empty text.")
 
-            # API 呼叫失敗
+            # 如果發生例外錯誤
             except Exception as e:
 
-                # 記錄最後錯誤
+                # 紀錄錯誤
                 last_error = e
 
-                # 轉成字串方便判斷
+                # 將錯誤轉成字串
                 error_text = str(e)
 
-                # 判斷是否屬於可重試錯誤
+                # 判斷是否屬於「可重試錯誤」
                 retryable = (
 
-                    # 503 = 服務暫時不可用
+                    # HTTP 503
+                    # 服務暫時不可用
                     "503" in error_text
 
-                    # UNAVAILABLE = 服務不可用
+                    # API unavailable
                     or "UNAVAILABLE" in error_text
 
-                    # 429 = rate limit
+                    # HTTP 429
+                    # 超過 rate limit
                     or "429" in error_text
 
                     # 資源耗盡
@@ -158,11 +189,13 @@ def gemini_generate_with_retry(
                     or "high demand" in error_text.lower()
                 )
 
-                # 如果是可重試錯誤
+                # 如果屬於可重試錯誤
                 if retryable:
 
                     # 計算等待時間
-                    # attempt 越高等待越久
+                    #
+                    # attempt 越大等待越久
+                    # random.random() 用來避免所有 request 同時重試
                     wait_time = 2 + attempt * 3 + random.random()
 
                     # 顯示提示訊息
@@ -183,7 +216,7 @@ def gemini_generate_with_retry(
                 # 跳出 retry loop
                 break
 
-        # 當前模型失敗後
+        # 當前模型全部 retry 都失敗後
         # 嘗試下一個模型
         print("Trying next Gemini model if available...")
 
@@ -198,16 +231,25 @@ def gemini_generate_with_retry(
 # ============================================================
 
 # 建立本地 fallback 履歷內容
-# 當 Gemini 無法使用時會改用這個
+#
+# 功能：
+# 當 Gemini 無法使用時
+# 用 Python 自動產生基本履歷資料
 def build_fallback_resume_content(raw):
 
     # 將技能字串切割成 list
+    #
+    # 假設：
+    # "Python, SQL, Excel"
+    #
+    # 會變成：
+    # ["Python", "SQL", "Excel"]
     skills = split_comma_text(raw["skills"])
 
-    # 將證照切割成 list
+    # 處理證照
     certificates = split_comma_text(raw["certificates"])
 
-    # 將比賽經歷切割成 list
+    # 處理競賽
     competitions = split_comma_text(raw["competitions"])
 
     # 如果沒有 skills
@@ -220,31 +262,37 @@ def build_fallback_resume_content(raw):
     # 如果沒有證照
     if not certificates:
 
-        # 填入預設值
+        # 放入預設值
         certificates = ["None"]
 
     # 如果沒有競賽
     if not competitions:
 
-        # 填入預設值
+        # 放入預設值
         competitions = ["None"]
 
-    # 建立自我介紹 summary
+    # 建立 summary（自我介紹）
+    #
+    # 使用 f-string 插入使用者資料
     summary = (
 
-        # 使用 f-string 插入使用者資料
+        # 自我介紹
         f"My name is {raw['name']}. "
 
+        # 學校與科系
         f"I am currently studying at {raw['school']}, "
         f"majoring in {raw['major']}. "
 
+        # 求職方向
         f"I am interested in applying for "
         f"{raw['target_position']}-related positions "
         f"in {raw['target_location']}. "
 
+        # 期望薪資
         f"My expected monthly salary is "
         f"{raw['expected_monthly_salary']}. "
 
+        # 專長
         f"My main specialty is {raw['specialty']}. "
 
         # 固定內容
@@ -259,7 +307,7 @@ def build_fallback_resume_content(raw):
     # 如果有工作經驗
     if raw["experience"]:
 
-        # 加入 summary
+        # 加入工作經驗描述
         summary += (
             f"My previous work or internship "
             f"experience includes {raw['experience']}. "
@@ -273,7 +321,7 @@ def build_fallback_resume_content(raw):
         "reliable and responsible team member."
     )
 
-    # 回傳完整履歷資料
+    # 回傳完整履歷 dictionary
     return {
 
         # 姓名
@@ -312,19 +360,20 @@ def build_fallback_resume_content(raw):
             "phone": raw["phone"],
         },
 
-        # 自我介紹
+        # 自我介紹 summary
         "profile_summary": summary,
 
         # 專長
         "specialty": raw["specialty"],
 
-        # 技能列表
+        # 技能 list
         "skills": skills,
 
         # 教育背景
         "education": [
             {
                 "school": raw["school"],
+
                 "major": raw["major"],
 
                 # 教育描述
@@ -374,4 +423,3 @@ def build_fallback_resume_content(raw):
             "and continuing to improve professional skills."
         ),
     }
-
