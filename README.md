@@ -21,6 +21,16 @@
 ## 環境與安裝需求
 ### 環境需求
 ### 安裝套件
+requests，發送 HTTP 請求，用於抓取職缺網站資料 \
+beautifulsoup4，解析 HTML 網頁內容，擷取職缺資訊 \
+reportlab，生成 PDF 履歷（排版、表格、字型) \
+google-genai，串接 Gemini AI，用於履歷生成與職缺推薦 \
+```
+pip install requests
+pip install beautifulsoup4
+pip install reportlab
+pip install google-genai
+```
 ### 載入模組
 
 ## 使用方式
