@@ -490,6 +490,1025 @@ def score_job_keyword(job, job_title, location, salary_min):
 
     return score
 
+# ============================================================
+# Gemini Job Ranking
+# ============================================================
+
+# 將原始職缺資料整理成 Gemini 比較容易分析的格式
+# 並加入 job_index 作為識別編號
+def compact_job_for_gemini(job, index):
+    return {
+        "job_index": index,  # 職缺編號
+        "platform": job.get("platform", ""),  # 職缺來源平台
+        "title": job.get("title", ""),  # 職缺名稱
+        "company": job.get("company", ""),  # 公司名稱
+        "location": job.get("location", ""),  # 工作地點
+        "salary": job.get("salary", ""),  # 薪資
+        "salary_status": job.get("salary_status", ""),  # 薪資是否公開
+        "keyword_score": job.get("keyword_score", 0),  # 關鍵字配對分數
+        "snippet": job.get("snippet", "")[:300],  # 職缺摘要（限制300字）
+        "url": job.get("url", ""),  # 職缺連結
+    }
+
+
+# 當 Gemini 無法使用時，使用本地端關鍵字排序
+def local_relevance_fallback(jobs, limit=20):
+    ranked = []
+
+    # 遍歷所有職缺
+    for job in jobs:
+
+        # 取得原始關鍵字分數
+        keyword_score = job.get("keyword_score", 0)
+
+        # 將 keyword_score 轉換成 match_score
+        match_score = min(100, max(30, keyword_score * 5))
+
+        # 複製原始職缺資料
+        new_job = job.copy()
+
+        # 加入配對分析結果
+        new_job["match_score"] = match_score
+
+        # 說明為何使用 fallback
+        new_job["gemini_reason"] = (
+            "Gemini ranking failed. "
+            "This result is ranked by keyword relevance only."
+        )
+
+        # 配對原因
+        new_job["fit_points"] = (
+            "Matched by job title, location, "
+            "salary text, or keyword similarity."
+        )
+
+        # 缺點或不確定性
+        new_job["concerns"] = (
+            "The relevance was not deeply evaluated by Gemini."
+        )
+
+        ranked.append(new_job)
+
+    # 依 match_score 由大到小排序
+    ranked.sort(
+        key=lambda x: x.get("match_score", 0),
+        reverse=True
+    )
+
+    # 回傳前 limit 筆
+    return ranked[:limit]
+
+
+# 使用 Gemini AI 對職缺進行排序與推薦
+def rank_jobs_with_gemini(client, raw_resume, raw_jobs):
+
+    # 若沒有職缺直接回傳空列表
+    if not raw_jobs:
+        return []
+
+    # 若 Gemini client 不存在，改用 fallback
+    if client is None:
+        return local_relevance_fallback(
+            raw_jobs,
+            OUTPUT_RECOMMEND_LIMIT
+        )
+
+    # 將職缺整理成 Gemini 專用格式
+    compact_jobs = [
+        compact_job_for_gemini(job, i + 1)
+        for i, job in enumerate(raw_jobs)
+    ]
+
+    # 建立 Prompt 給 Gemini
+    prompt = f"""
+You are an expert job matching assistant.
+
+Evaluate the relevance between the candidate's resume profile
+and the fetched job postings.
+
+Candidate profile:
+{json.dumps(raw_resume, ensure_ascii=False, indent=2)}
+
+Fetched job postings:
+{json.dumps(compact_jobs, ensure_ascii=False, indent=2)}
+
+Rules:
+1. Give each selected job a match_score from 0 to 100.
+2. Consider target position, location, salary, specialty,
+   skills, education, certificates, competitions, and experience.
+3. Penalize unrelated jobs.
+4. If salary is not clearly shown, do not reject it automatically,
+   but mention the uncertainty.
+5. Return at most {OUTPUT_RECOMMEND_LIMIT} jobs.
+6. Prefer match_score >= {MATCH_SCORE_THRESHOLD}.
+7. Do not invent job titles, companies, salaries, or URLs.
+
+Return ONLY valid JSON.
+
+JSON format:
+{{
+  "recommendations": [
+    {{
+      "job_index": 1,
+      "match_score": 85,
+      "reason": "why this job matches the candidate",
+      "fit_points": "specific matching points",
+      "concerns": "salary uncertainty or experience gap"
+    }}
+  ]
+}}
+"""
+
+    # 呼叫 Gemini API
+    text = gemini_generate_with_retry(
+        client=client,
+        prompt=prompt,
+        response_json=True,
+        max_retries=3,
+        temperature=0.2,
+    )
+
+    # 若 Gemini 無回應
+    if not text:
+        return local_relevance_fallback(
+            raw_jobs,
+            OUTPUT_RECOMMEND_LIMIT
+        )
+
+    try:
+        # 將 Gemini 回傳文字轉成 JSON
+        data = extract_json_from_text(text)
+
+        # 取得 recommendations 陣列
+        recs = data.get("recommendations", [])
+
+        ranked_jobs = []
+
+        # 處理每一筆推薦
+        for rec in recs:
+
+            try:
+                job_index = int(rec.get("job_index", 0))
+                match_score = int(rec.get("match_score", 0))
+
+            except Exception:
+                continue
+
+            # 防止 index 超出範圍
+            if job_index < 1 or job_index > len(raw_jobs):
+                continue
+
+            # 過濾低於門檻的職缺
+            if match_score < MATCH_SCORE_THRESHOLD:
+                continue
+
+            # 取得原始職缺資料
+            job = raw_jobs[job_index - 1].copy()
+
+            # 加入 Gemini 分析資訊
+            job["match_score"] = match_score
+
+            job["gemini_reason"] = clean_text(
+                rec.get("reason", "")
+            )
+
+            job["fit_points"] = clean_text(
+                rec.get("fit_points", "")
+            )
+
+            job["concerns"] = clean_text(
+                rec.get("concerns", "")
+            )
+
+            ranked_jobs.append(job)
+
+        # 依 match_score + keyword_score 排序
+        ranked_jobs.sort(
+            key=lambda x: (
+                x.get("match_score", 0),
+                x.get("keyword_score", 0)
+            ),
+            reverse=True,
+        )
+
+        # 若 Gemini 無有效結果
+        if not ranked_jobs:
+            return local_relevance_fallback(
+                raw_jobs,
+                OUTPUT_RECOMMEND_LIMIT
+            )
+
+        return ranked_jobs[:OUTPUT_RECOMMEND_LIMIT]
+
+    except Exception as e:
+
+        # JSON 解析失敗時 fallback
+        print("Gemini ranking parse failed. Using local fallback.")
+        print("Error:", e)
+
+        return local_relevance_fallback(
+            raw_jobs,
+            OUTPUT_RECOMMEND_LIMIT
+        )
+
+# ============================================================
+# PDF Styles and Components
+# ============================================================
+
+# 建立整份 PDF 使用的樣式（字型、顏色、大小等）
+def make_styles():
+
+    # 定義常用顏色
+    navy = colors.HexColor("#1F3A5F")   # 深藍色
+    teal = colors.HexColor("#2E7D7B")   # 青綠色
+    dark = colors.HexColor("#263238")   # 深灰色
+    gray = colors.HexColor("#546E7A")   # 淺灰藍色
+
+    # 回傳所有 ParagraphStyle
+    return {
+
+        # =========================
+        # 姓名字體樣式
+        # =========================
+        "name": ParagraphStyle(
+            name="Name",
+            fontName=PDF_BOLD,     # 粗體字型
+            fontSize=22,           # 字體大小
+            leading=28,            # 行距
+            textColor=navy,        # 字體顏色
+            alignment=TA_CENTER,   # 置中
+            spaceAfter=4,          # 下方間距
+        ),
+
+        # =========================
+        # 履歷標題 / Headline
+        # =========================
+        "headline": ParagraphStyle(
+            name="Headline",
+            fontName=PDF_FONT,
+            fontSize=10.5,
+            leading=14,
+            textColor=teal,
+            alignment=TA_CENTER,
+            spaceAfter=6,
+        ),
+
+        # =========================
+        # 區塊標題樣式
+        # =========================
+        "section": ParagraphStyle(
+            name="Section",
+            fontName=PDF_BOLD,
+            fontSize=12.5,
+            leading=16,
+            textColor=navy,
+            spaceBefore=8,
+            spaceAfter=5,
+        ),
+
+        # =========================
+        # 內文樣式
+        # =========================
+        "body": ParagraphStyle(
+            name="Body",
+            fontName=PDF_FONT,
+            fontSize=9,
+            leading=13,
+            textColor=dark,
+            spaceAfter=5,
+        ),
+
+        # =========================
+        # 粗體內文樣式
+        # =========================
+        "body_bold": ParagraphStyle(
+            name="BodyBold",
+            fontName=PDF_BOLD,
+            fontSize=9,
+            leading=13,
+            textColor=dark,
+            spaceAfter=4,
+        ),
+
+        # =========================
+        # 小字樣式
+        # =========================
+        "small": ParagraphStyle(
+            name="Small",
+            fontName=PDF_FONT,
+            fontSize=8.2,
+            leading=11,
+            textColor=gray,
+            spaceAfter=3,
+        ),
+
+        # =========================
+        # 標籤樣式（例如 Email / Phone）
+        # =========================
+        "label": ParagraphStyle(
+            name="Label",
+            fontName=PDF_BOLD,
+            fontSize=8.2,
+            leading=11,
+            textColor=navy,
+            spaceAfter=3,
+        ),
+
+        # =========================
+        # 條列式樣式
+        # =========================
+        "bullet": ParagraphStyle(
+            name="Bullet",
+            fontName=PDF_FONT,
+            fontSize=8.8,
+            leading=12,
+            leftIndent=9,          # 左縮排
+            firstLineIndent=-6,    # 第一行縮排
+            textColor=dark,
+            spaceAfter=2,
+        ),
+    }
+
+
+# ============================================================
+# 建立 Paragraph（段落）
+# ============================================================
+
+def para(text, style):
+
+    # escape_text 避免特殊字元破壞 PDF
+    return Paragraph(
+        escape_text(text),
+        style
+    )
+
+
+# ============================================================
+# 區塊標題（有背景色）
+# ============================================================
+
+def section_title(title, styles):
+
+    # 建立一個單列表格當作標題背景
+    table = Table(
+        [[Paragraph(
+            escape_text(title),
+            styles["section"]
+        )]],
+        colWidths=[170 * mm],
+    )
+
+    # 設定標題表格樣式
+    table.setStyle(TableStyle([
+
+        # 背景顏色
+        ("BACKGROUND",
+         (0, 0), (-1, -1),
+         colors.HexColor("#E8F1F5")),
+
+        # 外框線
+        ("BOX",
+         (0, 0), (-1, -1),
+         0.5,
+         colors.HexColor("#A7C7D9")),
+
+        # 左右上下 padding
+        ("LEFTPADDING", (0, 0), (-1, -1), 7),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 7),
+        ("TOPPADDING", (0, 0), (-1, -1), 4),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+    ]))
+
+    return table
+
+
+# ============================================================
+# 建立資訊表格（聯絡資訊 / 求職條件）
+# ============================================================
+
+def info_table(
+    rows,
+    styles,
+    label_width=45 * mm,
+    value_width=125 * mm,
+    bg="#F4F7F6",
+    border="#C5D6D4"
+):
+
+    data = []
+
+    # 將資料轉成兩欄格式
+    for label, value in rows:
+
+        data.append([
+            Paragraph(
+                escape_text(label),
+                styles["label"]
+            ),
+
+            Paragraph(
+                escape_text(value),
+                styles["small"]
+            ),
+        ])
+
+    # 建立表格
+    table = Table(
+        data,
+        colWidths=[label_width, value_width]
+    )
+
+    # 設定表格樣式
+    table.setStyle(TableStyle([
+
+        # 背景色
+        ("BACKGROUND",
+         (0, 0), (-1, -1),
+         colors.HexColor(bg)),
+
+        # 外框
+        ("BOX",
+         (0, 0), (-1, -1),
+         0.5,
+         colors.HexColor(border)),
+
+        # 內框線
+        ("INNERGRID",
+         (0, 0), (-1, -1),
+         0.3,
+         colors.HexColor("#DDE7E5")),
+
+        # padding
+        ("LEFTPADDING", (0, 0), (-1, -1), 7),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 7),
+        ("TOPPADDING", (0, 0), (-1, -1), 5),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
+
+        # 內容靠上
+        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+    ]))
+
+    return table
+
+
+# ============================================================
+# 條列清單
+# ============================================================
+
+def bullet_list(items, styles):
+
+    story = []
+
+    # 若沒有資料則顯示 None
+    if not items:
+        items = ["None"]
+
+    # 建立每一項 bullet
+    for item in items:
+
+        story.append(
+            Paragraph(
+                f"- {escape_text(item)}",
+                styles["bullet"]
+            )
+        )
+
+    return story
+
+
+# ============================================================
+# 技能 chip 樣式表格
+# ============================================================
+
+def chip_table(items, styles, max_cols=3):
+
+    # 清理空值
+    clean_items = [
+        safe_text(x)
+        for x in items
+        if safe_text(x)
+    ]
+
+    # 若沒有資料
+    if not clean_items:
+        clean_items = ["None"]
+
+    rows = []
+    row = []
+
+    # 每 max_cols 個換一列
+    for item in clean_items:
+
+        row.append(
+            Paragraph(
+                escape_text(item),
+                styles["small"]
+            )
+        )
+
+        # 換行
+        if len(row) == max_cols:
+            rows.append(row)
+            row = []
+
+    # 最後不足 max_cols 補空白
+    if row:
+
+        while len(row) < max_cols:
+            row.append("")
+
+        rows.append(row)
+
+    # 建立表格
+    table = Table(
+        rows,
+        colWidths=[52 * mm] * max_cols
+    )
+
+    # 設定 chip 樣式
+    table.setStyle(TableStyle([
+
+        ("BACKGROUND",
+         (0, 0), (-1, -1),
+         colors.HexColor("#E8F0E6")),
+
+        ("BOX",
+         (0, 0), (-1, -1),
+         0.3,
+         colors.HexColor("#B7C9A7")),
+
+        ("INNERGRID",
+         (0, 0), (-1, -1),
+         0.3,
+         colors.white),
+
+        ("LEFTPADDING", (0, 0), (-1, -1), 6),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 6),
+        ("TOPPADDING", (0, 0), (-1, -1), 4),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+    ]))
+
+    return table
+
+
+# ============================================================
+# 頁面背景（頁首與頁尾）
+# ============================================================
+
+def draw_page_background(canvas_obj, doc):
+
+    canvas_obj.saveState()
+
+    width, height = A4
+
+    # 頁首藍色區塊
+    canvas_obj.setFillColor(colors.HexColor("#1F3A5F"))
+
+    canvas_obj.rect(
+        0,
+        height - 20 * mm,
+        width,
+        20 * mm,
+        fill=1,
+        stroke=0
+    )
+
+    # 頁尾綠色區塊
+    canvas_obj.setFillColor(colors.HexColor("#5E7C3A"))
+
+    canvas_obj.rect(
+        0,
+        0,
+        width,
+        6 * mm,
+        fill=1,
+        stroke=0
+    )
+
+    # 頁碼
+    canvas_obj.setFont(PDF_FONT, 8)
+
+    canvas_obj.setFillColor(colors.white)
+
+    canvas_obj.drawRightString(
+        width - 14 * mm,
+        height - 9 * mm,
+        f"Page {doc.page}"
+    )
+
+    canvas_obj.restoreState()
+
+# ============================================================
+# 建立完整履歷 PDF
+# ============================================================
+
+def create_resume_pdf(content, output_path=OUTPUT_PDF):
+
+    # 建立所有樣式
+    styles = make_styles()
+
+    # 建立 PDF 文件
+    doc = SimpleDocTemplate(
+
+        # 輸出檔案名稱
+        output_path,
+
+        # A4 尺寸
+        pagesize=A4,
+
+        # 邊界設定
+        rightMargin=17 * mm,
+        leftMargin=17 * mm,
+        topMargin=26 * mm,
+        bottomMargin=14 * mm,
+    )
+
+    # story 用來存放 PDF 元件
+    story = []
+
+    # ============================================================
+    # Header 區塊（姓名 + 標題）
+    # ============================================================
+
+    header = Table(
+
+        [
+            # 第一列：姓名
+            [
+                Paragraph(
+                    escape_text(content.get("name", "")),
+                    styles["name"]
+                )
+            ],
+
+            # 第二列：個人標題 / headline
+            [
+                Paragraph(
+                    escape_text(content.get("headline", "")),
+                    styles["headline"]
+                )
+            ],
+        ],
+
+        # 表格寬度
+        colWidths=[176 * mm],
+    )
+
+    # Header 樣式設定
+    header.setStyle(TableStyle([
+
+        # 白色背景
+        ("BACKGROUND",
+         (0, 0), (-1, -1),
+         colors.white),
+
+        # 外框線
+        ("BOX",
+         (0, 0), (-1, -1),
+         0.7,
+         colors.HexColor("#D2DFE5")),
+
+        # padding
+        ("LEFTPADDING", (0, 0), (-1, -1), 8),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 8),
+        ("TOPPADDING", (0, 0), (-1, -1), 8),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+    ]))
+
+    # 加入 story
+    story.append(header)
+
+    # 加入空白間距
+    story.append(Spacer(1, 8))
+
+    # ============================================================
+    # 聯絡資訊區塊
+    # ============================================================
+
+    # 取得聯絡資料
+    contact = content.get("contact", {})
+
+    # 取得工作偏好資料
+    prefs = content.get("job_preferences", {})
+
+    # 建立聯絡資訊表格
+    story.append(info_table(
+
+        [
+            ("Address", contact.get("address", "")),
+            ("Email", contact.get("email", "")),
+            ("Phone", contact.get("phone", "")),
+        ],
+
+        styles,
+
+        # label 欄寬
+        label_width=30 * mm,
+
+        # value 欄寬
+        value_width=140 * mm
+    ))
+
+    story.append(Spacer(1, 8))
+
+    # ============================================================
+    # 求職條件區塊
+    # ============================================================
+
+    story.append(info_table(
+
+        [
+            (
+                "Target Position",
+                prefs.get("target_position", "")
+            ),
+
+            (
+                "Preferred Location",
+                prefs.get("target_location", "")
+            ),
+
+            (
+                "Expected Monthly Salary",
+                prefs.get("expected_monthly_salary", "")
+            ),
+        ],
+
+        styles,
+
+        # 欄寬設定
+        label_width=50 * mm,
+        value_width=120 * mm,
+
+        # 表格背景色
+        bg="#FFF8E6",
+
+        # 外框顏色
+        border="#D8B45A"
+    ))
+
+    story.append(Spacer(1, 10))
+
+    # ============================================================
+    # 個人簡介區塊
+    # ============================================================
+
+    # 區塊標題
+    story.append(
+        section_title(
+            "Profile Summary",
+            styles
+        )
+    )
+
+    story.append(Spacer(1, 5))
+
+    # 個人介紹內容
+    story.append(
+        para(
+            content.get("profile_summary", ""),
+            styles["body"]
+        )
+    )
+
+    story.append(Spacer(1, 8))
+
+    # ============================================================
+    # 技能與專長區塊
+    # ============================================================
+
+    story.append(
+        section_title(
+            "Skills & Specialty",
+            styles
+        )
+    )
+
+    story.append(Spacer(1, 5))
+
+    # 專長主題
+    story.append(
+        Paragraph(
+
+            f"Specialty: "
+            f"{escape_text(content.get('specialty', ''))}",
+
+            styles["body_bold"]
+        )
+    )
+
+    # 技能 chip 表格
+    story.append(
+        chip_table(
+            content.get("skills", []),
+            styles,
+            max_cols=3
+        )
+    )
+
+    story.append(Spacer(1, 8))
+
+    # ============================================================
+    # 學歷區塊
+    # ============================================================
+
+    story.append(
+        section_title(
+            "Education",
+            styles
+        )
+    )
+
+    story.append(Spacer(1, 5))
+
+    # 遍歷所有學歷
+    for edu in content.get("education", []):
+
+        # 學校名稱
+        story.append(
+            Paragraph(
+                escape_text(edu.get("school", "")),
+                styles["body_bold"]
+            )
+        )
+
+        # 主修科系
+        story.append(
+            Paragraph(
+
+                f"Major: "
+                f"{escape_text(edu.get('major', ''))}",
+
+                styles["small"]
+            )
+        )
+
+        # 學歷描述
+        story.append(
+            Paragraph(
+                escape_text(
+                    edu.get("description", "")
+                ),
+                styles["small"]
+            )
+        )
+
+        story.append(Spacer(1, 4))
+
+    story.append(Spacer(1, 5))
+
+    # ============================================================
+    # 證照區塊
+    # ============================================================
+
+    story.append(
+        section_title(
+            "Certificates",
+            styles
+        )
+    )
+
+    story.append(Spacer(1, 5))
+
+    # 條列式證照
+    story.extend(
+        bullet_list(
+            content.get("certificates", []),
+            styles
+        )
+    )
+
+    story.append(Spacer(1, 8))
+
+    # ============================================================
+    # 比賽經歷區塊
+    # ============================================================
+
+    story.append(
+        section_title(
+            "Competitions",
+            styles
+        )
+    )
+
+    story.append(Spacer(1, 5))
+
+    # 條列式比賽
+    story.extend(
+        bullet_list(
+            content.get("competitions", []),
+            styles
+        )
+    )
+
+    story.append(Spacer(1, 8))
+
+    # ============================================================
+    # 工作經驗區塊
+    # ============================================================
+
+    story.append(
+        section_title(
+            "Experience",
+            styles
+        )
+    )
+
+    story.append(Spacer(1, 5))
+
+    # 遍歷工作經驗
+    for exp in content.get("experience", []):
+
+        # 職位名稱
+        story.append(
+            Paragraph(
+                escape_text(
+                    exp.get("title", "Experience")
+                ),
+                styles["body_bold"]
+            )
+        )
+
+        # 工作描述
+        story.append(
+            Paragraph(
+                escape_text(
+                    exp.get("description", "")
+                ),
+                styles["small"]
+            )
+        )
+
+        story.append(Spacer(1, 4))
+
+    story.append(Spacer(1, 5))
+
+    # ============================================================
+    # 優勢區塊
+    # ============================================================
+
+    story.append(
+        section_title(
+            "Strengths",
+            styles
+        )
+    )
+
+    story.append(Spacer(1, 5))
+
+    # 條列式優勢
+    story.extend(
+        bullet_list(
+            content.get("strengths", []),
+            styles
+        )
+    )
+
+    story.append(Spacer(1, 8))
+
+    # ============================================================
+    # 職涯目標區塊
+    # ============================================================
+
+    story.append(
+        section_title(
+            "Career Objective",
+            styles
+        )
+    )
+
+    story.append(Spacer(1, 5))
+
+    # 職涯目標內容
+    story.append(
+        para(
+            content.get("career_objective", ""),
+            styles["body"]
+        )
+    )
+
+    # ============================================================
+    # 建立 PDF
+    # ============================================================
+
+    doc.build(
+
+        # PDF 內容
+        story,
+
+        # 第一頁背景
+        onFirstPage=draw_page_background,
+
+        # 後續頁背景
+        onLaterPages=draw_page_background,
+    )
+
+    # 回傳輸出路徑
+    return output_path
+
+
 # Output Files
 # ============================================================
 # 這一區主要負責「把程式產生的結果寫成檔案」。
