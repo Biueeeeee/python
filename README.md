@@ -86,37 +86,33 @@ from google.genai import types
 ### 1.輸入期望的工作待遇
 首先輸入期望月薪，系統會根據所設定的薪資條件，篩選符合需求的職缺，並分析薪資是否符合預期。
 ```python=
-expected_monthly_salary = input("Expected Monthly Salary, for example 90000: ").strip()
+    salary_min_text, salary_max_text, salary_min_value, salary_max_value = input_salary_range()
+    expected_monthly_salary = f"{salary_min_text} - {salary_max_text}"  
 ```
 ### 2.輸入想應徵的職缺
 輸入希望應徵的職位與工作地點，系統會根據輸入內容，自動搜尋 104 與 1111 等求職平台相關職缺並做整理。
 ```python=
-target_position = input("Target Position, for example Software Engineer / 軟體工程師: ").strip()
-target_location = input("Preferred Work Location, for example Taipei / 台北: ").strip()
+    target_position = input("Target Position, for example Software Engineer / 軟體工程師: ").strip()  
+    target_location = input("Preferred Work Location, for example Taipei / 台北: ").strip()  
 ```
 ### 3.輸入基本個人資料與經歷
 輸入履歷相關資訊，系統會將輸入的資料進行整理，並透過 Gemini AI 自動產生較正式的英文履歷與自我介紹。
 ```python=
-#讓使用者輸入姓名與個人專長。
-name = input("Name: ").strip()
-specialty = input("Specialty: ").strip()
+    name = input("Name: ").strip()  
+    specialty = input("Specialty: ").strip()  
 
-# 讓使用者輸入聯絡資訊。
-address = input("Address: ").strip()
-email = input("Email: ").strip()
-phone = input("Phone: ").strip()
+    address = input("Address: ").strip()  
+    email = input("Email: ").strip()  
+    phone = input("Phone: ").strip()  
 
-# 讓使用者輸入證照與競賽經驗。
-certificates = input("Certificates, separated by commas. Leave blank if none: ").strip()
-competitions = input("Competitions, separated by commas. Leave blank if none: ").strip()
+    certificates = input("Certificates, separated by commas. Leave blank if none: ").strip()  
+    competitions = input("Competitions, separated by commas. Leave blank if none: ").strip()  
 
-# 讓使用者輸入學歷資料。
-school = input("School: ").strip()
-major = input("Major: ").strip()
+    school = input("School: ").strip()  
+    major = input("Major: ").strip()  
 
-# 讓使用者輸入技能與工作經驗。
-skills = input("Skills, separated by commas. Example: Python, Excel, Finance: ").strip()
-experience = input("Work / Internship Experience. Leave blank if none: ").strip()
+    skills = input("Skills, separated by commas. Example: Python, Excel, Finance: ").strip()  
+    experience = input("Work / Internship Experience. Leave blank if none: ").strip()  
 ```
 ### 4.系統生成履歷PDF檔案
 所有資料輸入完成後，系統會自動執行履歷生成與職缺推薦流程，包括: \
@@ -127,82 +123,79 @@ experience = input("Work / Internship Experience. Leave blank if none: ").strip(
 • 生成 PDF 履歷檔案\
 • 輸出 JSON 與 TXT 分析結果\
 ```python=
-# 將使用者輸入的所有資料整理成一個字典。
-# 後續產生履歷、搜尋職缺、職缺推薦都會使用這份資料。
-raw_resume = {
-    "target_position": target_position,
-    "target_location": target_location,
-    "expected_monthly_salary": expected_monthly_salary,
-    "name": name,
-    "specialty": specialty,
-    "address": address,
-    "email": email,
-    "phone": phone,
-    "certificates": certificates,
-    "competitions": competitions,
-    "school": school,
-    "major": major,
-    "skills": skills,
-    "experience": experience,
-}
+    raw_resume = {  # 把使用者輸入的履歷與求職條件整理成字典
+        "target_position": target_position,  # 設定目標職位欄位
+        "target_location": target_location,  # 設定字典欄位，讓資料可以用固定格式保存
+        "expected_monthly_salary": expected_monthly_salary,  # 設定期望月薪欄位
+        "salary_min": salary_min_text,  # 設定最低期望薪資欄位
+        "salary_max": salary_max_text,  # 設定最高期望薪資欄位
+        "benefit_preferences": benefit_preferences,  # 設定使用者福利偏好欄位
+        "name": name,  # 設定履歷姓名欄位
+        "specialty": specialty,  # 設定主要專長欄位
+        "address": address,  # 設定地址欄位
+        "email": email,  # 設定電子郵件欄位
+        "phone": phone,  # 設定電話欄位
+        "certificates": certificates,  # 設定證照清單欄位
+        "competitions": competitions,  # 設定競賽或活動經驗欄位
+        "school": school,  # 設定字典欄位，讓資料可以用固定格式保存
+        "major": major,  # 設定字典欄位，讓資料可以用固定格式保存
+        "skills": skills,  # 設定技能清單欄位
+        "experience": experience,  # 設定工作或實習經驗欄位
+    }
 
-# 建立 Gemini API 用戶端，準備呼叫 AI 模型。
-print("\nConnecting to Gemini API...")
-client = make_gemini_client()
+    client = make_gemini_client()  # 建立 Gemini 客戶端，成功時可呼叫 AI，失敗時用本機備援
 
-# 使用 Gemini 將使用者輸入的履歷資料整理成更正式的履歷內容。
-print("Generating polished resume content...")
-resume_content = generate_resume_content_with_gemini(client, raw_resume)
+    resume_content = generate_resume_content_with_gemini(client, raw_resume)  # 存放 AI 或備援邏輯產生的履歷內容
 
-# 根據目標職位、地點與薪資條件抓取職缺。
-print("Fetching job postings...")
-salary_min = safe_int(expected_monthly_salary, 0)
-raw_jobs = get_raw_jobs(target_position, target_location, salary_min)
+    resume_content.setdefault("job_preferences", {})
+    resume_content["job_preferences"]["expected_salary_range"] = expected_monthly_salary
+    resume_content["job_preferences"]["required_benefits_text"] = benefits_to_text(
+        get_required_benefits(benefit_preferences)
+    )
 
-# 顯示抓到的職缺數量。
-print(f"Fetched {len(raw_jobs)} jobs.")
+    salary_min = salary_min_value  # 最低薪資條件，用來篩選與評分職缺
+    salary_max = salary_max_value  # 最高薪資條件，用來判斷職缺是否落在期望薪資範圍
+    raw_jobs = get_raw_jobs(target_position, target_location, salary_min)  # 存放從求職網站抓回來並初步整理的職缺資料
 
-# 使用 Gemini 根據履歷內容排序職缺適合度。
-print("Ranking jobs by resume relevance...")
-recommended_jobs = rank_jobs_with_gemini(client, raw_resume, raw_jobs)
+    raw_jobs = apply_user_preferences_to_jobs(  # 存放從求職網站抓回來並初步整理的職缺資料
+        jobs=raw_jobs,  # 建立空清單，用來存放整理後的職缺資料
+        job_title=target_position,  # 設定 job_title 變數，供後續流程使用
+        location=target_location,  # 設定 location 變數，供後續流程使用
+        salary_min=salary_min,  # 最低薪資條件，用來篩選與評分職缺
+        salary_max=salary_max,  # 最高薪資條件，用來判斷職缺是否落在期望薪資範圍
+        benefit_preferences=benefit_preferences,  # 設定 benefit_preferences 變數，供後續流程使用
+    )
 
-# 顯示最後推薦的職缺數量。
-print(f"Recommended {len(recommended_jobs)} jobs.")
+    recommended_jobs = rank_jobs_with_gemini(client, raw_resume, raw_jobs)  # 存放 Gemini 或本機備援排序後的推薦職缺
 ```
-最後輸出檔案為: \
-AI生成履歷PDF  (ai_resume.pdf) \
-AI履歷結構化資料  (resume_ai_content.json) \
-履歷文字內容  (resume_content.txt) \
-職缺推薦結果  (job_recommendations.txt) \
-原始職缺資料  (raw_jobs_fetched.json) 
+最後輸出檔案給使用者
 ```python=
-# 開始輸出所有結果檔案。
-print("Writing output files...")
+    with open(OUTPUT_JSON, "w", encoding="utf-8") as f:  # 開啟輸出檔案，使用 utf-8 避免中文亂碼
+        json.dump(resume_content, f, ensure_ascii=False, indent=2)  # 把 Python 字典或清單寫成 JSON 檔案
 
-# 將 Gemini 產生的履歷內容存成 JSON 檔。
-with open(OUTPUT_JSON, "w", encoding="utf-8") as f:
-    json.dump(resume_content, f, ensure_ascii=False, indent=2)
+    with open(RAW_JOBS_JSON, "w", encoding="utf-8") as f:  # 開啟輸出檔案，使用 utf-8 避免中文亂碼
+        json.dump(raw_jobs, f, ensure_ascii=False, indent=2)  # 把 Python 字典或清單寫成 JSON 檔案
 
-# 將抓到的原始職缺資料存成 JSON 檔。
-with open(RAW_JOBS_JSON, "w", encoding="utf-8") as f:
-    json.dump(raw_jobs, f, ensure_ascii=False, indent=2)
+    write_resume_txt(resume_content, OUTPUT_TXT)
+    write_jobs_txt(raw_resume, raw_jobs, recommended_jobs, JOBS_TXT)
 
-# 將履歷內容寫入文字檔。
-write_resume_txt(resume_content, OUTPUT_TXT)
 
-# 將職缺推薦結果寫入文字檔。
-write_jobs_txt(raw_resume, raw_jobs, recommended_jobs, JOBS_TXT)
+    pdf_path = create_resume_pdf(resume_content, OUTPUT_PDF)  # 儲存建立完成的 PDF 路徑
 
-# 將履歷內容製作成 PDF。
-print("Creating resume PDF...")
-pdf_path = create_resume_pdf(resume_content, OUTPUT_PDF)
 
-# 顯示程式完成訊息與所有輸出檔案位置。
-print("\nDone.")
-print("Files saved to:")
-print(OUTPUT_JSON)
-print(OUTPUT_TXT)
-print(JOBS_TXT)
-print(RAW_JOBS_JSON)
-print(pdf_path)
+if __name__ == "__main__":  # 確認這個檔案是被直接執行時，才啟動主程式
+    main()  # 呼叫主程式，開始執行完整流程
+
+    # 將履歷內容製作成 PDF。
+    print("Creating resume PDF...")
+    pdf_path = create_resume_pdf(resume_content, OUTPUT_PDF)
+
+    # 顯示程式完成訊息與所有輸出檔案位置。
+    print("\nDone.")
+    print("Files saved to:")
+    print(OUTPUT_JSON)
+    print(OUTPUT_TXT)
+    print(JOBS_TXT)
+    print(RAW_JOBS_JSON)
+    print(pdf_path)
 ```
