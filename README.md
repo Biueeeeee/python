@@ -183,7 +183,7 @@ from google.genai import types
     pdf_path = create_resume_pdf(resume_content, OUTPUT_PDF)  # 儲存建立完成的 PDF 路徑
 
 
-if __name__ == "__main__":  # 確認這個檔案是被直接執行時，才啟動主程式
+if __name__ == "__main__":  
     main()  # 呼叫主程式，開始執行完整流程
 
     # 將履歷內容製作成 PDF。
@@ -199,3 +199,5 @@ if __name__ == "__main__":  # 確認這個檔案是被直接執行時，才啟�
     print(RAW_JOBS_JSON)
     print(pdf_path)
 ```
+## Demo
+<https://drive.google.com/file/d/1SUYCDbxAHAh-q518uW6W7w6s3VbGfZG3/view?usp=sharing>
