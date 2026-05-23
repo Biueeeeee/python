@@ -493,41 +493,43 @@ def score_job_keyword(job, job_title, location, salary_min):
 # ============================================================
 # Gemini Functions
 # ============================================================
-
-# 建立 Gemini API Client 的函式
+# 建立 Gemini API Client
+# 這個函式的目的：
+# 1. 檢查 Gemini 套件是否存在
+# 2. 檢查 API KEY 是否存在
+# 3. 建立 Gemini Client
+# 4. 如果失敗則回傳 None
 def make_gemini_client():
 
-    # 如果 google-genai 套件沒有安裝
-    # GEMINI_INSTALLED 通常是一個布林值
-    # False 代表套件不存在
+    # 安裝 google-genai 套件
+    # True 代表已安裝
+    # False 代表未安裝
     if not GEMINI_INSTALLED:
-
-        # 顯示沒安裝好的提示訊息
+        # 顯示沒安裝的提示訊息
         print("google-genai is not installed. Using local fallback content.")
 
-        # 回傳 None，代表無法使用 Gemini
+        # 回傳 None
+        # 後續程式會改用本地 fallback 內容
         return None
 
-    # 從環境變數讀取 API KEY
-    # os.getenv() 可以安全取得環境變數
+    # 從系統環境變數中讀取 GEMINI_API_KEY
+    # 例如：
+    # export GEMINI_API_KEY=xxxx
     api_key = os.getenv("GEMINI_API_KEY")
 
-    # 如果沒有設定 API KEY
+    # API KEY 不存在的狀況
     if not api_key:
-
-        # 顯示沒安裝好的提示訊息
         print("GEMINI_API_KEY is not set. Using local fallback content.")
-
-        # 回傳 None，之後程式會改用本地 fallback 內容
         return None
 
     # 嘗試建立 Gemini Client
     try:
 
-        # 成功讀取 API KEY
+        # 顯示成功訊息
         print("GEMINI_API_KEY loaded successfully.")
 
-        # 建立 Gemini Client 物件並回傳
+        # 建立 Gemini Client 物件
+        # 後續所有 Gemini API 呼叫都會透過這個 client
         return genai.Client(api_key=api_key)
 
     # 如果建立失敗
@@ -536,59 +538,63 @@ def make_gemini_client():
         # 顯示錯誤訊息
         print("Gemini client failed. Using local fallback content.")
 
-        # 印出詳細錯誤
+        # 印出詳細錯誤內容
         print("Error:", e)
-
-        # 回傳 None
         return None
 
 
-# 使用 Gemini 生成內容，並支援 Retry 機制
-def gemini_generate_with_retry(
-    client,
-    prompt,
-    response_json=True,
-    max_retries=3,
-    temperature=0.35
-):
+# 使用 Gemini 生成內容（包含 retry 機制）
+#
+# 參數說明：
+# client            -> Gemini Client
+# prompt            -> 要傳給 Gemini 的提示詞
+# response_json     -> 是否要求 Gemini 回傳 JSON
+# max_retries       -> 每個模型最多重試次數
+# temperature       -> 回應創意程度
+#
+# 功能：
+# 1. 嘗試多個 Gemini 模型
+# 2. API 忙碌時自動 retry
+# 3. 遇到失敗時自動切換模型
+def gemini_generate_with_retry(client, prompt, response_json=True, max_retries=3, temperature=0.35):
 
     # 如果 client 是 None
     # 代表 Gemini 無法使用
     if client is None:
         return None
 
-    # 紀錄最後一次錯誤
+    # 用來記錄最後一次錯誤
     last_error = None
 
-    # 記錄已使用過的模型
+    # 記錄已使用模型
     # 避免重複使用
     used_models = []
 
     # 逐一嘗試 fallback 模型
+    # GEMINI_FALLBACK_MODELS 通常是模型名稱 list
+    # 例如：
+    # ["gemini-1.5-pro", "gemini-1.5-flash"]
     for model in GEMINI_FALLBACK_MODELS:
 
-        # 如果模型已經用過
+        # 如果模型已經使用過
         if model in used_models:
+
+            # 以 continue 跳過
             continue
 
         # 加入已使用清單
         used_models.append(model)
 
         # Retry 機制
-        # 每個模型最多重試 max_retries 次
+        # 每個模型最多嘗試 max_retries 次
         for attempt in range(max_retries):
-
             try:
 
-                # Gemini 生成設定
-                config_kwargs = {
-                    "temperature": temperature
-                }
+                # Gemini 設定參數
+                config_kwargs = {"temperature": temperature}
 
-                # 如果希望 Gemini 回傳 JSON
+                # 指定回傳格式為 JSON
                 if response_json:
-
-                    # 指定 MIME TYPE 為 JSON
                     config_kwargs["response_mime_type"] = "application/json"
 
                 # 呼叫 Gemini API
@@ -597,82 +603,61 @@ def gemini_generate_with_retry(
                     # 指定模型名稱
                     model=model,
 
-                    # 傳入 Prompt
+                    # 傳送 Prompt
                     contents=prompt,
 
-                    # 建立設定物件
+                    # 建立 Gemini 設定物件
                     config=types.GenerateContentConfig(**config_kwargs),
                 )
 
-                # 如果 Gemini 有回傳文字
+                # 如果 Gemini 有成功回傳文字
                 if response.text and response.text.strip():
 
-                    # 去除前後空白後回傳
+                    # 去除空白後回傳
                     return response.text.strip()
 
-                # 如果回傳空字串
+                # 如果 Gemini 回傳空字串
                 last_error = RuntimeError("Gemini returned empty text.")
 
-            # API 呼叫失敗
+            # 發生其他錯誤
             except Exception as e:
-
-                # 記錄最後錯誤
                 last_error = e
-
-                # 轉成字串方便判斷
                 error_text = str(e)
 
-                # 判斷是否屬於可重試錯誤
+                # 判斷是否屬於「可重試錯誤」
                 retryable = (
-
-                    # 503 = 服務暫時不可用
                     "503" in error_text
-
-                    # UNAVAILABLE = 服務不可用
                     or "UNAVAILABLE" in error_text
-
-                    # 429 = rate limit
                     or "429" in error_text
-
-                    # 資源耗盡
                     or "RESOURCE_EXHAUSTED" in error_text
-
-                    # 高流量
                     or "high demand" in error_text.lower()
                 )
 
-                # 如果是可重試錯誤
                 if retryable:
 
                     # 計算等待時間
-                    # attempt 越高等待越久
+                    # attempt 越大等待越久
+                    # random.random() 用來避免所有 request 同時重試
                     wait_time = 2 + attempt * 3 + random.random()
 
                     # 顯示提示訊息
-                    print(
-                        f"Gemini is busy or rate-limited. "
-                        f"Retry in {wait_time:.1f} seconds..."
-                    )
-
-                    # 暫停一段時間
+                    print(f"Gemini is busy or rate-limited. Retry in {wait_time:.1f} seconds...")
                     time.sleep(wait_time)
 
-                    # 繼續 retry
+                    # 繼續 retry loop
                     continue
 
-                # 非可重試錯誤
                 print(f"Gemini model {model} failed:", e)
 
                 # 跳出 retry loop
                 break
 
-        # 當前模型失敗後
+        # 當前模型全部 retry 都失敗後
         # 嘗試下一個模型
         print("Trying next Gemini model if available...")
 
     # 所有模型都失敗
     print("Gemini failed after retries. Last error:", last_error)
-
     return None
 
 
@@ -681,162 +666,96 @@ def gemini_generate_with_retry(
 # ============================================================
 
 # 建立本地 fallback 履歷內容
-# 當 Gemini 無法使用時會改用這個
+# 功能：
+# 當 Gemini 無法使用時
+# 用 Python 自動產生基本履歷資料
 def build_fallback_resume_content(raw):
 
     # 將技能字串切割成 list
+    #
+    # 假設：
+    # "Python, SQL, Excel"
+    #
+    # 會變成：
+    # ["Python", "SQL", "Excel"]
     skills = split_comma_text(raw["skills"])
 
-    # 將證照切割成 list
+    # 同樣步驟處理考試證照
     certificates = split_comma_text(raw["certificates"])
 
-    # 將比賽經歷切割成 list
+    # 同樣步驟處理競賽經驗
     competitions = split_comma_text(raw["competitions"])
 
-    # 如果沒有 skills
-    # 但有 specialty
+    # 如果沒有技能但有專長，將專長作為技能
     if not skills and raw["specialty"]:
-
-        # 將 specialty 當作 skill
         skills = [raw["specialty"]]
 
     # 如果沒有證照
     if not certificates:
 
-        # 填入預設值
+        # 放入預設值
         certificates = ["None"]
 
-    # 如果沒有競賽
+    # 如果沒有競賽經驗
     if not competitions:
-
-        # 填入預設值
         competitions = ["None"]
 
-    # 建立自我介紹 summary
+    # 建立 summary（自我介紹）
+    # 使用 f-string 插入使用者資料
+    # 資料包括自我介紹、校系、求職方向、期望薪資等
     summary = (
-
-        # 使用 f-string 插入使用者資料
-        f"My name is {raw['name']}. "
-
-        f"I am currently studying at {raw['school']}, "
-        f"majoring in {raw['major']}. "
-
-        f"I am interested in applying for "
-        f"{raw['target_position']}-related positions "
-        f"in {raw['target_location']}. "
-
-        f"My expected monthly salary is "
-        f"{raw['expected_monthly_salary']}. "
-
-        f"My main specialty is {raw['specialty']}. "
-
-        # 固定內容
-        "Through academic learning, "
-        "project participation, and practical training, "
-
-        "I have developed analytical thinking, "
-        "communication ability, teamwork, "
-        "and a strong willingness to keep learning. "
+        f"My name is {raw['name']}. I am currently studying at {raw['school']}, "
+        f"majoring in {raw['major']}. I am interested in applying for "
+        f"{raw['target_position']}-related positions in {raw['target_location']}. "
+        f"My expected monthly salary is {raw['expected_monthly_salary']}. "
+        f"My main specialty is {raw['specialty']}. Through academic learning, "
+        "project participation, and practical training, I have developed analytical thinking, "
+        "communication ability, teamwork, and a strong willingness to keep learning. "
     )
 
-    # 如果有工作經驗
+    # 工作經驗描述
     if raw["experience"]:
+        summary += f"My previous work or internship experience includes {raw['experience']}. "
 
-        # 加入 summary
-        summary += (
-            f"My previous work or internship "
-            f"experience includes {raw['experience']}. "
-        )
-
-    # 加入結尾
+    # 結尾
     summary += (
-        "I hope to apply my background and strengths "
-        "in a real workplace, learn from experienced "
-        "professionals, and gradually develop into a "
-        "reliable and responsible team member."
+        "I hope to apply my background and strengths in a real workplace, learn from experienced "
+        "professionals, and gradually develop into a reliable and responsible team member."
     )
 
-    # 回傳完整履歷資料
+    # 回傳完整履歷的 dictionary
     return {
-
-        # 姓名
         "name": raw["name"],
-
-        # 目標職位
         "target_position": raw["target_position"],
-
-        # 履歷標題
         "headline": f"{raw['target_position']} Candidate",
-
-        # 求職偏好
         "job_preferences": {
-
-            # 目標職位
             "target_position": raw["target_position"],
-
-            # 工作地點
             "target_location": raw["target_location"],
-
-            # 期望薪資
-            "expected_monthly_salary":
-                raw["expected_monthly_salary"],
+            "expected_monthly_salary": raw["expected_monthly_salary"],
         },
-
-        # 聯絡資訊
         "contact": {
-
-            # 地址
             "address": raw["address"],
-
-            # Email
             "email": raw["email"],
-
-            # 電話
             "phone": raw["phone"],
         },
-
-        # 自我介紹
         "profile_summary": summary,
-
-        # 專長
         "specialty": raw["specialty"],
-
-        # 技能列表
         "skills": skills,
-
-        # 教育背景
         "education": [
             {
                 "school": raw["school"],
                 "major": raw["major"],
-
-                # 教育描述
-                "description":
-                    "Academic background related to "
-                    "the candidate's professional development.",
+                "description": "Academic background related to the candidate's professional development.",
             }
         ],
-
-        # 證照
         "certificates": certificates,
-
-        # 競賽
         "competitions": competitions,
-
-        # 工作經驗
         "experience": [
             {
                 "title": "Work / Internship Experience",
-
-                "description":
-                    raw["experience"]
-                    if raw["experience"]
-                    else
-                    "No formal work or internship experience provided.",
+                "description": raw["experience"] if raw["experience"] else "No formal work or internship experience provided.",
             }
         ],
-
-        # 個人優勢
         "strengths": [
             "Willingness to learn",
             "Communication ability",
@@ -844,19 +763,1037 @@ def build_fallback_resume_content(raw):
             "Analytical thinking",
             "Adaptability",
         ],
-
-        # 職涯目標
         "career_objective": (
-            f"To apply for {raw['target_position']}-related "
-            f"positions in {raw['target_location']}, "
-
-            f"with an expected monthly salary of "
-            f"{raw['expected_monthly_salary']}, "
-
-            "while gaining practical workplace experience "
-            "and continuing to improve professional skills."
+            f"To apply for {raw['target_position']}-related positions in {raw['target_location']}, "
+            f"with an expected monthly salary of {raw['expected_monthly_salary']}, "
+            "while gaining practical workplace experience and continuing to improve professional skills."
         ),
     }
+
+
+def generate_resume_content_with_gemini(client, raw):
+    prompt = f"""
+You are a professional resume writing assistant.
+
+The user provided raw resume information. Rewrite and organize it into a polished English resume.
+
+Important rules:
+- Return ONLY valid JSON.
+- Do not use markdown.
+- Do not invent fake experience, fake certificates, fake education, or fake achievements.
+- Keep the writing professional and suitable for a student or entry-level candidate.
+- If the background does not perfectly match the target position, emphasize transferable skills.
+- Make the profile summary around 220 to 320 words.
+- Use clear English.
+- Keep Chinese names, schools, certificates, or competition names if they are originally Chinese.
+- Do not remove target location or expected monthly salary.
+- The resume must clearly include target position, preferred work location, and expected monthly salary.
+
+Raw resume information:
+{json.dumps(raw, ensure_ascii=False, indent=2)}
+
+Return JSON in exactly this structure:
+
+{{
+  "name": "candidate name",
+  "target_position": "target position",
+  "headline": "short professional headline",
+  "job_preferences": {{
+    "target_position": "target position",
+    "target_location": "preferred work location",
+    "expected_monthly_salary": "expected monthly salary"
+  }},
+  "contact": {{
+    "address": "address",
+    "email": "email",
+    "phone": "phone"
+  }},
+  "profile_summary": "long professional self introduction, around 220 to 320 words",
+  "specialty": "main specialty",
+  "skills": ["skill 1", "skill 2", "skill 3"],
+  "education": [
+    {{
+      "school": "school name",
+      "major": "major",
+      "description": "brief education description"
+    }}
+  ],
+  "certificates": ["certificate 1", "certificate 2"],
+  "competitions": ["competition 1", "competition 2"],
+  "experience": [
+    {{
+      "title": "experience title",
+      "description": "experience description"
+    }}
+  ],
+  "strengths": ["strength 1", "strength 2", "strength 3"],
+  "career_objective": "career objective"
+}}
+"""
+
+    text = gemini_generate_with_retry(
+        client=client,
+        prompt=prompt,
+        response_json=True,
+        max_retries=3,
+        temperature=0.35,
+    )
+
+    if not text:
+        print("Using local fallback resume content.")
+        return build_fallback_resume_content(raw)
+
+    try:
+        data = extract_json_from_text(text)
+
+        required_keys = [
+            "name",
+            "target_position",
+            "headline",
+            "job_preferences",
+            "contact",
+            "profile_summary",
+            "specialty",
+            "skills",
+            "education",
+            "certificates",
+            "competitions",
+            "experience",
+            "strengths",
+            "career_objective",
+        ]
+
+        for key in required_keys:
+            if key not in data:
+                raise ValueError(f"Missing key: {key}")
+
+        return data
+
+    except Exception as e:
+        print("Gemini JSON parse failed. Using local fallback content.")
+        print("Error:", e)
+        return build_fallback_resume_content(raw)
+
+
+# ============================================================
+# Job Fetching
+# ============================================================
+
+# 從 104 API 直接抓取職缺資料
+#
+# 參數：
+# job_title  -> 職位名稱，例如 "Python工程師"
+# location   -> 地區，例如 "台中市"
+# salary_min -> 最低薪資
+# limit      -> 最多抓幾筆資料
+#
+# 功能：
+# 1. 呼叫 104 API
+# 2. 解析 JSON
+# 3. 整理成統一格式
+# 4. 回傳職缺 list
+def fetch_104_jobs_direct(job_title, location, salary_min, limit=50):
+
+    # 建立空 list 儲存職缺
+    jobs = []
+
+    # 將職位與地區組合成搜尋關鍵字
+    #
+    # 例如：
+    # "Python工程師 台中市"
+    #
+    # strip() 用來移除前後空白
+    keyword = f"{job_title} {location}".strip()
+
+    # 104網站的連結（URL）
+    api_url = "https://www.104.com.tw/jobs/search/list"
+
+    # HTTP Header
+    # 很多網站會檢查 Header
+    # 如果沒有 User-Agent
+    # 可能會被擋下來
+    headers = {
+        # 偽裝成瀏覽器
+        "User-Agent": "Mozilla/5.0",
+
+        # Referer 表示從哪個頁面進來
+        "Referer": build_104_search_url(job_title, location, salary_min),
+
+        # 接受 JSON
+        "Accept": "application/json, text/plain, */*",
+
+        # 語言設定
+        "Accept-Language": "zh-TW,zh;q=0.9,en;q=0.8",
+    }
+
+    page = 1
+
+    # while 條件：
+    #
+    # 1. jobs 數量還沒達到 limit
+    # 2. 最多抓 10 頁
+    while len(jobs) < limit and page <= 10:
+
+        # API Query Parameters
+        params = {
+            "ro": "0",
+            "kwop": "7",
+            "keyword": keyword,
+            "expansionType": "area,spec,com,job,wf,wktm",
+            "order": "15",
+            "asc": "0",
+            "page": str(page),
+            "mode": "s",
+            "jobsource": "joblist_search",
+        }
+
+        try:
+
+            # 發送 GET Request
+            res = requests.get(api_url, headers=headers, params=params, timeout=15)
+
+            # 如果 HTTP Status 不是 200
+            # 會直接丟出 Exception
+            res.raise_for_status()
+
+            # 將 JSON 轉成 Python dict
+            data = res.json()
+
+            # 取得職缺 list
+            #
+            # data 結構：
+            # {
+            #   "data": {
+            #       "list": [...]
+            #   }
+            # }
+            job_list = data.get("data", {}).get("list", [])
+
+            # 如果沒有資料
+            if not job_list:
+
+                # 結束 while loop
+                break
+
+            for item in job_list:
+
+                # 如果已達上限
+                if len(jobs) >= limit:
+                    break
+
+                # 取得職位名稱
+                title = clean_text(item.get("jobName", ""))
+
+                # 公司名稱
+                company = clean_text(item.get("custName", ""))
+
+                # 工作地點
+                #
+                # or 的意思：
+                # 如果前面是空值
+                # 就改用後面
+                job_location = clean_text(
+                    item.get("jobAddrNoDesc", "")
+                    or item.get("jobAddress", "")
+                    or item.get("areaDesc", "")
+                )
+
+                # 薪資資訊
+                salary = clean_text(item.get("salaryDesc", ""))
+
+                # 工作描述
+                snippet = clean_text(item.get("description", ""))
+
+                # 預設空連結
+                link = ""
+
+                # 原始 link 資料
+                raw_link = item.get("link", "")
+
+                # 有些 link 是 dict
+                if isinstance(raw_link, dict):
+
+                    # 先取 job link
+                    # 如果沒有再取 cust link
+                    link = raw_link.get("job", "") or raw_link.get("cust", "")
+
+                # 有些 link 是字串
+                elif isinstance(raw_link, str):
+                    link = raw_link
+
+                # 將相對網址轉成完整網址
+                link = normalize_url(link, "https://www.104.com.tw")
+
+                # 建立統一格式職缺資料
+                job = {
+                    "platform": "104 Job Bank",
+                    "title": title,
+                    "company": company if company else "Not clearly shown",
+                    "location": job_location if job_location else "Not clearly shown",
+                    "salary": salary if salary else "Not clearly shown",
+                    "snippet": snippet,
+                    "url": link,
+                    "source": "104 direct search",
+                }
+
+                # 幫職缺計算關鍵字分數
+                #
+                # 分數越高代表越符合搜尋條件
+                score_job_keyword(job, job_title, location, salary_min)
+
+                # 加入 jobs list
+                jobs.append(job)
+
+            page += 1
+
+            # 暫停 0.4 秒
+            #
+            # 避免太快發 request 被網站封鎖
+            time.sleep(0.4)
+
+        # 如果發生錯誤
+        except Exception as e:
+
+            # 顯示錯誤訊息
+            print("104 direct fetch failed:", e)
+
+            # 停止抓取
+            break
+
+    # 回傳所有職缺
+    return jobs
+
+
+# 從 HTML 中提取 JSON-LD 職缺資料
+#
+# JSON-LD 是網站嵌入的結構化資料
+#
+# 很多求職網站會在：
+# <script type="application/ld+json">
+# 中放 JobPosting 資訊
+def extract_json_ld_jobs(soup):
+
+    # 儲存職缺為空 list
+    jobs = []
+
+    # 遞迴搜尋 JobPosting
+    def walk(obj):
+
+        # 儲存找到的 JobPosting
+        found = []
+
+        # 如果是 dict
+        if isinstance(obj, dict):
+
+            # 取得 @type
+            obj_type = obj.get("@type", "")
+
+            # 有些 @type 是 list
+            if isinstance(obj_type, list):
+
+                # 判斷是否包含 JobPosting
+                is_job = "JobPosting" in obj_type
+            else:
+
+                # 單一字串判斷
+                is_job = obj_type == "JobPosting"
+
+            # 如果是職缺
+            if is_job:
+
+                # 加入 found
+                found.append(obj)
+
+            # 遞迴搜尋所有 value
+            for value in obj.values():
+                found.extend(walk(value))
+
+        # 如果是 list
+        elif isinstance(obj, list):
+
+            # 遞迴搜尋每個元素
+            for item in obj:
+                found.extend(walk(item))
+
+        return found
+
+    # 找所有 JSON-LD script
+    for script in soup.select('script[type="application/ld+json"]'):
+        try:
+
+            # 取得 script 文字
+            raw = script.get_text(strip=True)
+            if not raw:
+                continue
+
+            # JSON 轉 dict
+            data = json.loads(raw)
+
+            # 找出所有 JobPosting
+            job_objects = walk(data)
+
+            # 處理每個職缺
+            for j in job_objects:
+
+                # 職位名稱
+                title = clean_text(j.get("title", ""))
+
+                # URL
+                url = j.get("url", "") or j.get("sameAs", "")
+
+                # 預設公司名稱
+                company = "Not clearly shown"
+
+                # 取得 hiringOrganization
+                hiring_org = j.get("hiringOrganization", {})
+
+                # 如果是 dict
+                if isinstance(hiring_org, dict):
+
+                    # 取得公司名稱
+                    company = clean_text(hiring_org.get("name", "")) or "Not clearly shown"
+
+                # 預設地點
+                location_text = "Not clearly shown"
+
+                # 取得工作地點
+                job_location = j.get("jobLocation", {})
+                if isinstance(job_location, dict):
+                    address = job_location.get("address", {})
+                    if isinstance(address, dict):
+
+                        # 將區域資訊組合
+                        location_text = clean_text(
+                            " ".join([
+                                str(address.get("addressRegion", "")),
+                                str(address.get("addressLocality", "")),
+                                str(address.get("streetAddress", "")),
+                            ])
+                        ) or "Not clearly shown"
+
+                salary = "Not clearly shown"
+
+                # 基本薪資
+                base_salary = j.get("baseSalary", {})
+
+                # 如果存在薪資資訊
+                if isinstance(base_salary, dict):
+
+                    # 轉 JSON 字串
+                    salary = clean_text(json.dumps(base_salary, ensure_ascii=False))
+
+                # 如果 title 與 url 都存在
+                if title and url:
+                    jobs.append({
+                        "title": title,
+                        "company": company,
+                        "location": location_text,
+                        "salary": salary,
+                        "snippet": "",
+                        "url": normalize_url(url, "https://www.1111.com.tw"),
+                    })
+
+        # JSON 解析失敗
+        except Exception:
+
+            # 忽略錯誤
+            continue
+
+    return jobs
+
+
+# ============================================================
+# 從文字中猜測公司名稱
+# ============================================================
+
+# 功能：
+# 從一大段文字中，用 regex 抓出可能的公司名稱
+#
+# 例如：
+# text =
+# "台積電股份有限公司誠徵 Python 工程師"
+#
+# 會抓出：
+# "台積電股份有限公司"
+def guess_company_from_text(text):
+
+    # re.search()：
+    # 在文字中搜尋第一個符合 regex 的內容
+    #
+    # regex 解釋：
+    #
+    # [\u4e00-\u9fa5A-Za-z0-9（）()股份有限公司]
+    #
+    # 允許的字元：
+    # 1. 中文
+    # 2. 英文大小寫
+    # 3. 數字
+    # 4. 中文括號（）
+    # 5. 英文括號()
+    # 6. 「股份有限公司」中的字
+    #
+    # {2,40}
+    # 長度限制 2~40 個字
+    #
+    # (?:股份有限公司|有限公司|公司)
+    #
+    # 公司名稱必須以：
+    # 1. 股份有限公司
+    # 2. 有限公司
+    # 3. 公司
+    #
+    # 作為結尾
+    m = re.search(
+        r"([\u4e00-\u9fa5A-Za-z0-9（）()股份有限公司]{2,40}(?:股份有限公司|有限公司|公司))",
+        text,
+    )
+
+    # 如果有找到符合內容
+    if m:
+
+        # m.group(1)
+        # 代表第一組括號匹配到的內容
+       return m.group(1)
+
+    # 如果沒有找到回傳
+    return "Not clearly shown"
+
+
+# ============================================================
+# 直接抓取 1111 職缺
+# ============================================================
+
+# 功能：
+# 1. 建立 1111 搜尋網址
+# 2. 抓取 HTML
+# 3. 解析 JSON-LD
+# 4. 額外解析 HTML 中的職缺連結
+# 5. 回傳統一格式職缺資料
+#
+# 參數：
+# job_title  -> 職位名稱
+# location   -> 地區
+# salary_min -> 最低薪資
+# limit      -> 最多抓取數量
+def fetch_1111_jobs_direct(job_title, location, salary_min, limit=50):
+    jobs = []
+
+    # 建立 1111 搜尋網址
+    #
+    # 例如：
+    # https://www.1111.com.tw/search/job?...
+    url = build_1111_search_url(job_title, location, salary_min)
+
+    # HTTP Header
+    headers = {
+
+        # 偽裝成瀏覽器
+        "User-Agent": "Mozilla/5.0",
+
+        # Referer
+        "Referer": "https://www.1111.com.tw/",
+
+        # 語言偏好
+        "Accept-Language": "zh-TW,zh;q=0.9,en;q=0.8",
+    }
+
+    try:
+
+        # 發送 GET Request
+        res = requests.get(url, headers=headers, timeout=15)
+
+        # 如果 status code 不是 200
+        # 直接丟 Exception
+        res.raise_for_status()
+
+        # 建立 BeautifulSoup HTML Parser
+        soup = BeautifulSoup(res.text, "html.parser")
+
+        # 從 JSON-LD 提取職缺
+        #
+        # JSON-LD 是網站內嵌的結構化資料
+        json_ld_jobs = extract_json_ld_jobs(soup)
+
+        # 逐一處理 JSON-LD 職缺
+        for item in json_ld_jobs:
+
+            # 如果超過上限
+            if len(jobs) >= limit:
+                break
+
+            # 建立統一格式職缺資料
+            job = {
+                "platform": "1111 Job Bank",
+                "title": item.get("title", ""),
+                "company": item.get("company", "Not clearly shown"),
+                "location": item.get("location", "Not clearly shown"),
+                "salary": item.get("salary", "Not clearly shown"),
+                "snippet": item.get("snippet", ""),
+                "url": item.get("url", ""),
+                "source": "1111 JSON-LD",
+            }
+
+            # 計算關鍵字分數
+            #
+            # 用來排序職缺相關性
+            score_job_keyword(job, job_title, location, salary_min)
+
+            # 加入 jobs
+            jobs.append(job)
+
+        # 建立 seen_urls set
+        #
+        # 用來避免重複職缺
+        seen_urls = set(job["url"] for job in jobs)
+
+        # 找所有 <a href="">
+        for a in soup.find_all("a", href=True):
+
+            # 如果超過 limit
+            if len(jobs) >= limit:
+                break
+
+            # 取得 href
+            href = a.get("href", "")
+
+            # 取得文字內容
+            text = clean_text(a.get_text(" ", strip=True))
+
+            # 如果文字太短
+            if not text or len(text) < 2:
+                continue
+
+            # 判斷是否像職缺連結
+            #
+            # 有些網址會包含：
+            # /job/
+            # job.asp
+            # job-description
+            is_job_link = (
+                "/job/" in href.lower()
+                or "job-bank/job-description" in href.lower()
+                or "job.asp" in href.lower()
+            )
+
+            # 如果不是職缺連結
+            if not is_job_link:
+                continue
+
+            # 將相對網址轉完整網址
+            full_url = normalize_url(href, "https://www.1111.com.tw")
+
+            # 如果已經抓過
+            if full_url in seen_urls:
+                continue
+
+            # 找 parent 元素
+            #
+            # 通常整個職缺卡片都在：
+            # article / li / div
+            parent = a.find_parent(["article", "li", "div"])
+
+            # 取得 parent 文字
+            #
+            # 如果沒有 parent
+            # 就用 text
+            parent_text = clean_text(parent.get_text(" ", strip=True)) if parent else text
+
+            # 如果搜尋職位不在文字中
+            #
+            # 例如搜尋 Python
+            # 但這職缺沒提到 Python
+            if job_title not in parent_text and job_title not in text:
+                continue
+
+            # 建立職缺資料
+            job = {
+                "platform": "1111 Job Bank",
+                "title": text,
+
+                # 從整段文字中用 regex 抓
+                "company": guess_company_from_text(parent_text),
+
+                # 工作地點
+                #
+                # 如果地區有出現在文字中
+                # 就使用 location
+                "location": location if location in parent_text else "Not clearly shown",
+
+                # 從文字中提取薪資
+                "salary": extract_salary_string(parent_text),
+
+                # 工作簡介
+                #
+                # 只保留前 350 字
+                "snippet": parent_text[:350],
+                "url": full_url,
+                "source": "1111 HTML parsing",
+            }
+
+            # 計算關鍵字分數
+            score_job_keyword(job, job_title, location, salary_min)
+
+            # 加入 jobs
+            jobs.append(job)
+
+            # 加入 seen_urls
+            #
+            # 避免之後重複
+            seen_urls.add(full_url)
+
+    # 如果發生錯誤
+    except Exception as e:
+
+        # 印出錯誤
+        print("1111 direct fetch failed:", e)
+
+    # 回傳職缺 list
+    return jobs
+
+
+# ============================================================
+# 使用 DuckDuckGo 搜尋
+# ============================================================
+
+# 功能：
+# 使用 DuckDuckGo HTML 搜尋頁面
+# 作為 fallback 搜尋來源
+def search_duckduckgo(keyword, max_results=50):
+
+    # 建立搜尋網址
+    #
+    # quote()：
+    # URL encode 關鍵字
+    #
+    # 例如：
+    # Python 工程師
+    #
+    # 會變：
+    # Python%20工程師
+    url = f"https://html.duckduckgo.com/html/?q={quote(keyword)}"
+    headers = {"User-Agent": "Mozilla/5.0"}
+    results = []
+
+    try:
+
+        # 發送 Request
+        res = requests.get(url, headers=headers, timeout=15)
+
+        # HTTP Error 檢查
+        res.raise_for_status()
+
+        # 建立 HTML Parser
+        soup = BeautifulSoup(res.text, "html.parser")
+
+        # 搜尋結果區塊
+        for block in soup.select(".result"):
+
+            # 標題元素
+            title_tag = block.select_one(".result__a") or block.select_one(".result__title a")
+
+            # 摘要元素
+            snippet_tag = block.select_one(".result__snippet")
+
+            # 如果沒有 title
+            if not title_tag:
+                continue
+
+            # 取得標題文字
+            title = clean_text(title_tag.get_text(" ", strip=True))
+
+            # 取得連結
+            link = normalize_duckduckgo_link(title_tag.get("href", ""))
+
+            # 取得摘要
+            snippet = clean_text(snippet_tag.get_text(" ", strip=True)) if snippet_tag else ""
+
+            # 如果 title 與 link 都存在
+            if title and link:
+
+                # 加入 results
+                results.append({
+                    "title": title,
+                    "link": link,
+                    "snippet": snippet,
+                })
+
+            # 如果達到上限
+            if len(results) >= max_results:
+                break
+
+    # 搜尋失敗
+    except Exception as e:
+
+        # 顯示錯誤
+        print("DuckDuckGo fallback failed:", e)
+
+    # 回傳搜尋結果
+    return results
+
+
+# ============================================================
+# Fallback 搜尋平台
+# ============================================================
+
+# 功能：
+# 當直接抓取 104 / 1111 失敗，
+# 或抓到的職缺太少時，
+# 改用 DuckDuckGo 搜尋網站內的職缺頁面。
+#
+# 這是一種「備援搜尋機制（fallback）」。
+#
+# 例如：
+# site:104.com.tw "Python工程師" "台北"
+#
+# 代表：
+# 只搜尋 104 網站中，
+# 同時包含「Python工程師」與「台北」的頁面。
+#
+# 參數：
+# platform   -> 平台名稱（104 / 1111）
+# domain     -> 搜尋網站 domain
+# job_title  -> 職位名稱
+# location   -> 地區
+# salary_min -> 最低薪資
+# limit      -> 最大搜尋數量
+def fallback_search_platform(platform, domain, job_title, location, salary_min, limit=50):
+
+    # 建立 DuckDuckGo 搜尋 query
+    #
+    # site:domain
+    # 限制搜尋特定網站
+    #
+    # 例如：
+    # site:104.com.tw "Python工程師" "台北"
+    query = f'site:{domain} "{job_title}" "{location}"'
+
+    # 使用 DuckDuckGo 搜尋
+    #
+    # 回傳格式：
+    # [
+    #   {
+    #       "title": "...",
+    #       "link": "...",
+    #       "snippet": "..."
+    #   }
+    # ]
+    raw = search_duckduckgo(query, max_results=limit)
+
+    # 儲存整理後的職缺
+    jobs = []
+
+    # 逐一處理搜尋結果
+    for item in raw:
+
+        # 建立統一格式職缺資料
+        job = {
+
+            # 平台名稱
+            #
+            # 例如：
+            # 104 Job Bank
+            "platform": platform,
+
+            # 搜尋結果標題
+            #
+            # 通常會是：
+            # "Python工程師｜某某公司｜104人力銀行"
+            "title": item["title"],
+
+            # DuckDuckGo 很難穩定抓公司名稱
+            #
+            # 所以先標記未知
+            "company": "Not clearly shown",
+
+            # 判斷 location 是否出現在：
+            # 1. title
+            # 2. snippet
+            #
+            # 如果有出現
+            # 才認為工作地點符合
+            "location": location if location in item["title"] + item["snippet"] else "Not clearly shown",
+
+            # 從 title + snippet 中提取薪資資訊
+            #
+            # extract_salary_string()
+            # 會找：
+            # 月薪40,000
+            # 年薪80萬
+            # 時薪200
+            #
+            # 等格式
+            "salary": extract_salary_string(item["title"] + " " + item["snippet"]),
+
+            # 搜尋結果摘要
+            "snippet": item["snippet"],
+
+            # 搜尋結果連結
+            "url": item["link"],
+
+            # 資料來源
+            #
+            # 表示這筆不是官方 API
+            # 而是搜尋引擎 fallback
+            "source": "DuckDuckGo fallback",
+        }
+
+        # 計算職缺關鍵字分數
+        #
+        # 用於後續排序
+        #
+        # 分數越高：
+        # 表示越符合：
+        # 1. 職位名稱
+        # 2. 地區
+        # 3. 薪資
+        score_job_keyword(job, job_title, location, salary_min)
+
+        # 加入 jobs
+        jobs.append(job)
+
+    # 回傳整理後職缺
+    return jobs
+
+
+# ============================================================
+# 取得所有原始職缺資料
+# ============================================================
+
+# 功能：
+# 1. 抓取 104
+# 2. 抓取 1111
+# 3. 如果太少則 fallback
+# 4. 去除重複職缺
+# 5. 依相關度排序
+# 6. 回傳最終職缺列表
+#
+# 這是整個「職缺蒐集系統」的核心函式。
+def get_raw_jobs(job_title, location, salary_min):
+
+    # 顯示目前正在抓取 104
+    print("Fetching 104 jobs...")
+
+    # 呼叫 104 抓取函式
+    jobs_104 = fetch_104_jobs_direct(
+        job_title=job_title,
+        location=location,
+        salary_min=salary_min,
+
+        # 每平台最大抓取數
+        limit=FETCH_PER_PLATFORM,
+    )
+
+    # 如果抓到的職缺太少
+    #
+    # 代表：
+    # 1. 104 改版
+    # 2. 被限制
+    # 3. 搜尋條件太少
+    #
+    # 就啟用 fallback
+    if len(jobs_104) < 10:
+        print("104 direct results are too few. Using fallback search...")
+
+        # extend()
+        # 將 fallback 結果加入 jobs_104
+        jobs_104.extend(
+            fallback_search_platform(
+                platform="104 Job Bank",
+                domain="104.com.tw",
+                job_title=job_title,
+                location=location,
+                salary_min=salary_min,
+                limit=FETCH_PER_PLATFORM,
+            )
+        )
+
+
+    # ========================================================
+    # 抓取 1111
+    # ========================================================
+
+    print("Fetching 1111 jobs...")
+    jobs_1111 = fetch_1111_jobs_direct(
+        job_title=job_title,
+        location=location,
+        salary_min=salary_min,
+        limit=FETCH_PER_PLATFORM,
+    )
+
+    # 如果 1111 結果太少
+    if len(jobs_1111) < 10:
+        print("1111 direct results are too few. Using fallback search...")
+
+        # 加入 fallback 搜尋結果
+        jobs_1111.extend(
+            fallback_search_platform(
+                platform="1111 Job Bank",
+                domain="1111.com.tw",
+                job_title=job_title,
+                location=location,
+                salary_min=salary_min,
+                limit=FETCH_PER_PLATFORM,
+            )
+        )
+
+
+    # ========================================================
+    # 去除重複職缺
+    # ========================================================
+
+    # 儲存不重複職缺
+    unique = []
+
+    # 用來記錄已出現職缺
+    #
+    # set 查詢速度非常快
+    seen = set()
+
+    # 合併 104 + 1111
+    for job in jobs_104 + jobs_1111:
+        url = job.get("url", "")
+
+        # 建立唯一 key
+        #
+        # 優先使用 URL
+        #
+        # 因為同一職缺 URL 通常固定
+        #
+        # 如果沒有 URL：
+        # 使用：
+        # platform|title|company
+        #
+        # 當作替代唯一值
+        key = url if url else f"{job.get('platform')}|{job.get('title')}|{job.get('company')}"
+
+        if key in seen:
+            continue
+
+        # 加入 seen
+        seen.add(key)
+
+        # 加入 unique
+        unique.append(job)
+
+
+    # ========================================================
+    # 排序職缺
+    # ========================================================
+
+    # 根據 keyword_score 排序
+    #
+    # reverse=True
+    # 代表由大到小
+    #
+    # 分數高：
+    # 表示比較符合搜尋需求
+    unique.sort(key=lambda x: x.get("keyword_score", 0), reverse=True)
+
+
+    # ========================================================
+    # 回傳前 N 筆
+    # ========================================================
+    return unique[:TOTAL_JOBS_TO_FETCH]
 
 
 # ============================================================
